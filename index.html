@@ -448,6 +448,8 @@
     if (!state.dbReady) return cardLoading();
     if (state.ownerScreen === "setup-pin") return renderSetupPin();
     if (state.ownerScreen === "pin") return renderPinGate();
+    if (state.ownerScreen === "forgot") return renderForgotPin();
+    if (state.ownerScreen === "reset") return renderResetPin();
     if (state.ownerScreen === "dashboard") return renderDashboard();
     return cardLoading();
   }
@@ -463,6 +465,7 @@
             '<div class="field"><label for="pin1">New PIN (4+ digits)</label><input type="text" id="pin1" inputmode="numeric" maxlength="10" required></div>' +
             '<div class="field"><label for="pin2">Confirm PIN</label><input type="text" id="pin2" inputmode="numeric" maxlength="10" required></div>' +
           '</div>' +
+          '<div class="field"><label for="recovery1">Recovery answer</label><input type="text" id="recovery1" maxlength="60" required placeholder="e.g. your first pet\'s name"><span class="muted" style="font-size:0.78rem;">Used only if you forget your PIN — pick something you\'ll remember but others won\'t guess.</span></div>' +
           '<button type="submit" class="btn btn-primary">Save PIN &amp; continue</button>' +
         '</form>' +
       '</div>'
@@ -477,7 +480,45 @@
         (state.formError ? '<div class="banner error" style="margin-top:10px;">' + escapeHtml(state.formError) + '</div>' : '') +
         '<form id="formPin" style="margin-top:14px;">' +
           '<div class="field"><label for="pinInput">PIN</label><input type="text" id="pinInput" inputmode="numeric" maxlength="10" required></div>' +
-          '<button type="submit" class="btn btn-primary">Unlock</button>' +
+          '<div class="row">' +
+            '<button type="submit" class="btn btn-primary">Unlock</button>' +
+            '<button type="button" class="btn btn-ghost" id="btnForgotPin">Forgot PIN?</button>' +
+          '</div>' +
+        '</form>' +
+      '</div>'
+    );
+  }
+
+  function renderForgotPin() {
+    return (
+      '<div class="card">' +
+        '<h2>Forgot your PIN</h2>' +
+        '<p class="muted">Answer your recovery question to set a new PIN.</p>' +
+        (state.formError ? '<div class="banner error" style="margin-top:10px;">' + escapeHtml(state.formError) + '</div>' : '') +
+        '<form id="formForgot" style="margin-top:14px;">' +
+          '<div class="field"><label for="recoveryInput">Recovery answer</label><input type="text" id="recoveryInput" maxlength="60" required></div>' +
+          '<div class="row">' +
+            '<button type="submit" class="btn btn-primary">Continue</button>' +
+            '<button type="button" class="btn btn-ghost" id="btnBackToPin">Back</button>' +
+          '</div>' +
+        '</form>' +
+      '</div>'
+    );
+  }
+
+  function renderResetPin() {
+    return (
+      '<div class="card">' +
+        '<h2>Set a new PIN</h2>' +
+        '<p class="muted">Recovery answer confirmed. Choose a new PIN below.</p>' +
+        (state.formError ? '<div class="banner error" style="margin-top:10px;">' + escapeHtml(state.formError) + '</div>' : '') +
+        '<form id="formResetPin" style="margin-top:14px;">' +
+          '<div class="row">' +
+            '<div class="field"><label for="rpin1">New PIN (4+ digits)</label><input type="text" id="rpin1" inputmode="numeric" maxlength="10" required></div>' +
+            '<div class="field"><label for="rpin2">Confirm PIN</label><input type="text" id="rpin2" inputmode="numeric" maxlength="10" required></div>' +
+          '</div>' +
+          '<div class="field"><label for="rrecovery">Recovery answer (optional — leave as is, or set a new one)</label><input type="text" id="rrecovery" maxlength="60" placeholder="Leave blank to keep your current answer"></div>' +
+          '<button type="submit" class="btn btn-primary">Save new PIN</button>' +
         '</form>' +
       '</div>'
     );
@@ -590,6 +631,10 @@
 
     if ((el = document.getElementById("formSetupPin"))) el.onsubmit = onSubmitSetupPin;
     if ((el = document.getElementById("formPin"))) el.onsubmit = onSubmitPin;
+    if ((el = document.getElementById("btnForgotPin"))) el.onclick = function () { state.ownerScreen = "forgot"; state.formError = ""; render(); };
+    if ((el = document.getElementById("btnBackToPin"))) el.onclick = function () { state.ownerScreen = "pin"; state.formError = ""; render(); };
+    if ((el = document.getElementById("formForgot"))) el.onsubmit = onSubmitForgot;
+    if ((el = document.getElementById("formResetPin"))) el.onsubmit = onSubmitResetPin;
     if ((el = document.getElementById("btnLockOwner"))) el.onclick = function () {
       safeDel("roster_owner_unlocked"); state.ownerUnlocked = false; state.ownerScreen = "pin"; unsubOwnerDashboard(); render();
     };
@@ -797,14 +842,18 @@
     });
   }
 
+  function normalizeAnswer(s) { return String(s || "").trim().toLowerCase(); }
+
   function onSubmitSetupPin(ev) {
     ev.preventDefault();
     var p1 = document.getElementById("pin1").value.trim();
     var p2 = document.getElementById("pin2").value.trim();
+    var recovery = document.getElementById("recovery1").value.trim();
     state.formError = "";
     if (p1.length < 4) { state.formError = "PIN must be at least 4 characters."; render(); return; }
     if (p1 !== p2) { state.formError = "PINs don't match."; render(); return; }
-    state.db.doc("config/admin").set({ pin: p1, setAt: Date.now() }).then(function () {
+    if (!recovery) { state.formError = "Please set a recovery answer too, in case you forget your PIN."; render(); return; }
+    state.db.doc("config/admin").set({ pin: p1, recovery: normalizeAnswer(recovery), setAt: Date.now() }).then(function () {
       safeSet("roster_owner_unlocked", "1");
       state.ownerUnlocked = true;
       state.ownerScreen = "dashboard";
@@ -836,6 +885,59 @@
       state.formError = "Couldn't check the PIN right now. Please try again.";
       render();
     });
+  }
+
+  function onSubmitForgot(ev) {
+    ev.preventDefault();
+    var answer = normalizeAnswer(document.getElementById("recoveryInput").value);
+    state.formError = "";
+    state.db.doc("config/admin").get().then(function (snap) {
+      var real = snap.exists ? snap.data().recovery : null;
+      if (!real) {
+        state.formError = "No recovery answer was ever set for this owner PIN — you'll need to reset it directly in Firestore instead.";
+        render();
+        return;
+      }
+      if (answer && answer === real) {
+        state.ownerScreen = "reset";
+        state.formError = "";
+        render();
+      } else {
+        state.formError = "That doesn't match the recovery answer on file.";
+        render();
+      }
+    }).catch(function () {
+      state.formError = "Couldn't check that right now. Please try again.";
+      render();
+    });
+  }
+
+  function onSubmitResetPin(ev) {
+    ev.preventDefault();
+    var p1 = document.getElementById("rpin1").value.trim();
+    var p2 = document.getElementById("rpin2").value.trim();
+    var newRecovery = document.getElementById("rrecovery").value.trim();
+    state.formError = "";
+    if (p1.length < 4) { state.formError = "PIN must be at least 4 characters."; render(); return; }
+    if (p1 !== p2) { state.formError = "PINs don't match."; render(); return; }
+    var ref = state.db.doc("config/admin");
+    (newRecovery ? Promise.resolve(null) : ref.get()).then(function (snap) {
+      var recovery = newRecovery
+        ? normalizeAnswer(newRecovery)
+        : ((snap && snap.exists && snap.data().recovery) || "");
+      return ref.set({ pin: p1, recovery: recovery, setAt: Date.now() });
+    }).then(finishReset).catch(function () {
+      state.formError = "Couldn't save the new PIN — please try again.";
+      render();
+    });
+  }
+
+  function finishReset() {
+    safeSet("roster_owner_unlocked", "1");
+    state.ownerUnlocked = true;
+    state.ownerScreen = "dashboard";
+    subscribeOwnerDashboard();
+    render();
   }
 
   function subscribeOwnerDashboard() {
